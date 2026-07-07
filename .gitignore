@@ -2,3 +2,4 @@
 .env
 supabase/.temp/
 node_modules/
+.Ds_Store
