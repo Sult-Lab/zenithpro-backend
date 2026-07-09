@@ -46,7 +46,6 @@ serve(async (req) => {
         amountPaid,
         changeAmount,
         paymentMethod,
-        paymentReference,
         notes
     } = body;
 
@@ -112,8 +111,6 @@ serve(async (req) => {
         p_amount_paid:           amountPaid,
         p_change_amount:         changeAmount ?? 0,
         p_payment_method:        paymentMethod,
-        p_payment_reference:     paymentReference ?? null,
-        p_payment_status:        paymentStatus,
         p_notes:                 notes ?? null
     });
 

@@ -1,30 +1,50 @@
-/**
- * nomba-webhook edge function
- *
- * Handles inbound bank transfer payments via Nomba virtual accounts.
- *
- * GET  — Browser redirect (Nomba sandbox behaviour) — acknowledged only
- * POST — Server-to-server webhook — verified and processed
- *
- * Matching logic:
- *   1. Find terminal by virtual account number (aliasAccountNumber)
- *   2. Match AWAITING_PAYMENT sale by terminal_id + exact amount + 30min window
- *   3. Confirm sale + payment record
- *
- * Source of truth for all payment confirmation.
- */
-
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const NOMBA_SIGNING_KEY = "NombaHackathon2026";
 
 // ---------------------------------------------------------------------------
 // Signature verification
+// Nomba does NOT sign the raw body.
+// They construct a specific string from payload fields + nomba-timestamp header
+// then sign that with HMAC-SHA256 + Base64 encode.
+//
+// Format:
+// eventType:requestId:userId:walletId:transactionId:type:time:responseCode:nombaTimestamp
 // ---------------------------------------------------------------------------
 async function verifySignature(
-  rawBody: string,
-  receivedSignature: string
+  payload: any,
+  receivedSignature: string,
+  nombaTimestamp: string
 ): Promise<boolean> {
+  const merchant    = payload.data?.merchant    ?? {};
+  const transaction = payload.data?.transaction ?? {};
+
+  const eventType            = payload.event_type               ?? "";
+  const requestId            = payload.requestId                ?? "";
+  const userId               = merchant.userId                  ?? "";
+  const walletId             = merchant.walletId                ?? "";
+  const transactionId        = transaction.transactionId        ?? "";
+  const transactionType      = transaction.type                 ?? "";
+  const transactionTime      = transaction.time                 ?? "";
+  let   responseCode         = transaction.responseCode         ?? "";
+
+  // Nomba treats the string "null" as empty
+  if (responseCode === "null") responseCode = "";
+
+  const hashingPayload = [
+    eventType,
+    requestId,
+    userId,
+    walletId,
+    transactionId,
+    transactionType,
+    transactionTime,
+    responseCode,
+    nombaTimestamp,
+  ].join(":");
+
+  console.log("Hashing payload:", hashingPayload);
+
   const encoder = new TextEncoder();
   const cryptoKey = await crypto.subtle.importKey(
     "raw",
@@ -33,14 +53,20 @@ async function verifySignature(
     false,
     ["sign"]
   );
+
   const signatureBuffer = await crypto.subtle.sign(
     "HMAC",
     cryptoKey,
-    encoder.encode(rawBody)
+    encoder.encode(hashingPayload)
   );
+
   const computedSignature = btoa(
     String.fromCharCode(...new Uint8Array(signatureBuffer))
   );
+
+  console.log("Computed signature:", computedSignature);
+  console.log("Received signature:", receivedSignature);
+
   return computedSignature === receivedSignature;
 }
 
@@ -48,11 +74,9 @@ async function verifySignature(
 // Main handler
 // ---------------------------------------------------------------------------
 Deno.serve(async (req: Request) => {
-  // GET — Nomba sandbox browser redirect. Just acknowledge.
   if (req.method === "GET") {
     const url = new URL(req.url);
-    const orderReference = url.searchParams.get("orderReference") ?? "";
-    console.log(`GET callback received | orderReference: ${orderReference}`);
+    console.log(`GET callback | ref: ${url.searchParams.get("orderReference")}`);
     return new Response("OK", { status: 200 });
   }
 
@@ -62,15 +86,7 @@ Deno.serve(async (req: Request) => {
 
   const rawBody = await req.text();
 
-  // Verify signature
-  const receivedSignature = req.headers.get("nomba-signature") ?? "";
-  const isValid = await verifySignature(rawBody, receivedSignature);
-
-  if (!isValid) {
-    console.error("Invalid Nomba signature — request rejected");
-    return new Response("Unauthorized", { status: 401 });
-  }
-
+  // Parse payload first — needed for signature verification
   let payload: any;
   try {
     payload = JSON.parse(rawBody);
@@ -78,10 +94,26 @@ Deno.serve(async (req: Request) => {
     return json({ error: "Invalid JSON" }, 400);
   }
 
-  const eventType: string = payload.event_type ?? payload.eventType ?? "";
+  // Get Nomba-specific headers
+  const receivedSignature = req.headers.get("nomba-signature")
+    ?? req.headers.get("nomba-sig-value")
+    ?? "";
+  const nombaTimestamp = req.headers.get("nomba-timestamp") ?? "";
+
+  console.log("nomba-signature:", receivedSignature);
+  console.log("nomba-timestamp:", nombaTimestamp);
+
+  // Verify signature
+  const isValid = await verifySignature(payload, receivedSignature, nombaTimestamp);
+
+  if (!isValid) {
+    console.error("Invalid Nomba signature — request rejected");
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const eventType: string = payload.event_type ?? "";
   console.log(`Nomba event: ${eventType} | requestId: ${payload.requestId ?? ""}`);
 
-  // Only handle virtual account transfer credits
   if (
     eventType === "payment_success" &&
     payload.data?.transaction?.type === "vact_transfer"
@@ -89,7 +121,6 @@ Deno.serve(async (req: Request) => {
     return await handleVirtualAccountPayment(payload);
   }
 
-  // Acknowledge everything else — non-200 causes infinite retries
   return json({ received: true }, 200);
 });
 
@@ -103,126 +134,199 @@ async function handleVirtualAccountPayment(payload: any): Promise<Response> {
   );
 
   const txn = payload.data.transaction;
-  const nombaTransactionId: string = txn.transactionId;
+  const nombaTransactionId: string  = txn.transactionId;
   const virtualAccountNumber: string = txn.aliasAccountNumber;
-  const amountInNaira: number = txn.transactionAmount; // Nomba sends Naira
-  const amountInKobo: number = Math.round(amountInNaira * 100);
-  const paidAt: string = txn.time ?? new Date().toISOString();
+  const amountInNaira: number        = txn.transactionAmount;
+  const paidAt: string               = txn.time ?? new Date().toISOString();
+  const senderName: string           = payload.data.customer?.senderName ?? "Unknown Sender";
+  const bankName: string             = payload.data.customer?.bankName ?? "Unknown Bank";
 
-  // 1. Idempotency — already processed?
-  const { data: existingPayment } = await supabase
-    .from("payments")
-    .select("id, status")
-    .eq("provider_reference", nombaTransactionId)
-    .maybeSingle();
-
-  if (existingPayment && existingPayment.status === "SUCCESSFUL") {
-    console.log(`Already processed ${nombaTransactionId} — skipping`);
-    return json({ received: true, idempotent: true }, 200);
-  }
-
-  // 2. Find terminal by virtual account number
-  const { data: terminal, error: terminalError } = await supabase
+  // 1. Find terminal by virtual account number
+  const { data: terminal } = await supabase
     .from("terminals")
-    .select("id, branch_id, business_id")
+    .select("id, business_id, name, fcm_token")
     .eq("nomba_virtual_account_number", virtualAccountNumber)
     .eq("is_active", true)
     .maybeSingle();
 
-  if (terminalError || !terminal) {
-    console.error(`No active terminal for virtual account ${virtualAccountNumber}`);
-    // 200 — don't retry for unknown accounts
+  if (!terminal) {
+    console.error(`No terminal for virtual account ${virtualAccountNumber}`);
     return json({ received: true, warning: "unknown_terminal" }, 200);
   }
 
-  // 3. Match AWAITING_PAYMENT sale by terminal + exact amount + 30min window
-  //    Scoping to a single terminal makes amount matching reliable —
-  //    concurrent pending sales on one terminal is almost always 1.
-  const windowStart = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  await supabase.from("nomba_transactions").upsert({
+  id: nombaTransactionId,
+  terminal_id: terminal.id,
+  business_id: terminal.business_id,
+  amount: Math.round(amountInNaira * 100),
+  sender_name: senderName,
+  bank_name: bankName,
+  virtual_account_number: virtualAccountNumber,
+  narration: txn.narration ?? "",
+  paid_at: paidAt,
+  created_at: new Date().toISOString(),
+}, { onConflict: "id", ignoreDuplicates: true });
 
-  const { data: sale, error: saleError } = await supabase
-    .from("sales")
-    .select("id, payment_id, payment_reference")
-    .eq("terminal_id", terminal.id)
-    .eq("business_id", terminal.business_id)
-    .eq("total_amount", amountInKobo)
-    .eq("payment_status", "AWAITING_PAYMENT")
-    .gte("created_at", windowStart)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (saleError || !sale) {
-    console.warn(
-      `No matching sale on terminal ${terminal.id} | ` +
-      `amount: ₦${amountInNaira} | txn: ${nombaTransactionId}`
+  // 3. Send FCM push notification to terminal
+  if (terminal.fcm_token) {
+    await sendFcmNotification(
+      terminal.fcm_token,
+      amountInNaira,
+      senderName,
+      bankName,
     );
-    return json({ received: true, warning: "no_matching_sale" }, 200);
-  }
-
-  // 4. Update or create Payment record
-  let paymentId = sale.payment_id;
-
-  if (paymentId) {
-    // Payment record already exists (created when cashier initiated transfer)
-    await supabase
-      .from("payments")
-      .update({
-        status: "SUCCESSFUL",
-        provider_reference: nombaTransactionId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", paymentId);
   } else {
-    // No payment record yet — create one now
-    paymentId = crypto.randomUUID();
-    await supabase
-      .from("payments")
-      .insert({
-        id: paymentId,
-        sale_id: sale.id,
-        business_id: terminal.business_id,
-        provider: "NOMBA",
-        status: "SUCCESSFUL",
-        amount: amountInKobo,
-        currency: "NGN",
-        provider_reference: nombaTransactionId,
-        payment_method: "TRANSFER",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-  }
-
-  // 5. Confirm the sale
-  const { error: saleUpdateError } = await supabase
-    .from("sales")
-    .update({
-      payment_status: "COMPLETED",
-      status: "COMPLETED",
-      amount_paid: amountInKobo,
-      payment_id: paymentId,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", sale.id)
-    .eq("business_id", terminal.business_id);
-
-  if (saleUpdateError) {
-    console.error("Failed to confirm sale:", saleUpdateError);
-    // Return 500 — want Nomba to retry this genuine failure
-    return json({ error: "Failed to confirm sale" }, 500);
+    console.warn(`Terminal ${terminal.id} has no FCM token registered`);
   }
 
   console.log(
-    `✅ Sale ${sale.id} (ref: ${sale.payment_reference}) CONFIRMED | ` +
-    `₦${amountInNaira} | terminal: ${terminal.id} | txn: ${nombaTransactionId}`
+    `✅ Webhook processed | ₦${amountInNaira} from ${senderName} | ` +
+    `terminal: ${terminal.id} | FCM sent: ${!!terminal.fcm_token}`
   );
 
-  return json({
-    received: true,
-    saleId: sale.id,
-    paymentId,
-    status: "SUCCESSFUL",
-  }, 200);
+  return json({ received: true }, 200);
+}
+
+async function sendFcmNotification(
+  fcmToken: string,
+  amountInNaira: number,
+  senderName: string,
+  bankName: string,
+): Promise<void> {
+  const serviceAccountJson = Deno.env.get("FCM_SERVICE_ACCOUNT");
+  const projectId          = Deno.env.get("FCM_PROJECT_ID");
+
+  if (!serviceAccountJson || !projectId) {
+    console.error("FCM_SERVICE_ACCOUNT or FCM_PROJECT_ID not set");
+    return;
+  }
+
+  // 1. Get OAuth2 access token from service account
+  const accessToken = await getFcmAccessToken(serviceAccountJson);
+  if (!accessToken) return;
+
+  const formatted = new Intl.NumberFormat("en-NG").format(amountInNaira);
+
+  // 2. Send via FCM HTTP v1 API
+  const res = await fetch(
+    `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`,
+    {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        message: {
+          token: fcmToken,
+          notification: {
+            title: "Payment Received ✅",
+            body: `₦${formatted} from ${senderName} (${bankName})`,
+          },
+          data: {
+            title:  "Payment Received ✅",
+            body:   `₦${formatted} from ${senderName}`,
+            amount: amountInNaira.toString(),
+            sender: senderName,
+            bank:   bankName,
+            type:   "payment_received",
+          },
+          android: {
+            priority: "high",
+            notification: {
+              channel_id: "nomba_payments",
+              sound: "default",
+            },
+          },
+        },
+      }),
+    }
+  );
+
+  const result = await res.json();
+  if (res.ok) {
+    console.log("FCM v1 sent successfully:", result.name);
+  } else {
+    console.error("FCM v1 failed:", JSON.stringify(result));
+  }
+}
+
+async function getFcmAccessToken(
+  serviceAccountJson: string
+): Promise<string | null> {
+  try {
+    const sa = JSON.parse(serviceAccountJson);
+
+    // Build JWT for Google OAuth2
+    const now     = Math.floor(Date.now() / 1000);
+    const expiry  = now + 3600;
+    const scope   = "https://www.googleapis.com/auth/firebase.messaging";
+
+    const header  = { alg: "RS256", typ: "JWT" };
+    const payload = {
+      iss: sa.client_email,
+      sub: sa.client_email,
+      aud: sa.token_uri,
+      iat: now,
+      exp: expiry,
+      scope,
+    };
+
+    const encode = (obj: object) =>
+      btoa(JSON.stringify(obj))
+        .replace(/=/g, "")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_");
+
+    const signingInput = `${encode(header)}.${encode(payload)}`;
+
+    // Import private key
+    const pemKey = sa.private_key
+      .replace("-----BEGIN RSA PRIVATE KEY-----", "")
+      .replace("-----END RSA PRIVATE KEY-----", "")
+      .replace("-----BEGIN PRIVATE KEY-----", "")
+      .replace("-----END PRIVATE KEY-----", "")
+      .replace(/\s/g, "");
+
+    const keyBuffer = Uint8Array.from(atob(pemKey), c => c.charCodeAt(0));
+
+    const cryptoKey = await crypto.subtle.importKey(
+      "pkcs8",
+      keyBuffer,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+
+    const signature = await crypto.subtle.sign(
+      "RSASSA-PKCS1-v1_5",
+      cryptoKey,
+      new TextEncoder().encode(signingInput)
+    );
+
+    const signatureB64 = btoa(
+      String.fromCharCode(...new Uint8Array(signature))
+    ).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+
+    const jwt = `${signingInput}.${signatureB64}`;
+
+    // Exchange JWT for access token
+    const tokenRes = await fetch(sa.token_uri, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion:  jwt,
+      }),
+    });
+
+    const tokenData = await tokenRes.json();
+    return tokenData.access_token ?? null;
+
+  } catch (err) {
+    console.error("Failed to get FCM access token:", err);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

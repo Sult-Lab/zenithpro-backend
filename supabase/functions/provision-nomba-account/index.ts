@@ -98,8 +98,15 @@ Deno.serve(async (req: Request) => {
   // 5. Create static virtual account under the merchant's sub-account
   //    accountRef must be unique — use terminalId
   //    accountName visible to customers making transfers
-  const accountName = `${business.name} - ${terminal.name}`.substring(0, 50);
-  const accountRef = `zenith-terminal-${terminalId}`;
+  const accountName = "Test Merchant";
+  const accountRef = `${Date.now()}`
+
+  console.log(
+  accountName.split("").map(c => ({
+    char: c,
+    code: c.charCodeAt(0),
+  }))
+);
 
   let virtualAccount: {
     accountNumber: string;
@@ -107,27 +114,39 @@ Deno.serve(async (req: Request) => {
     accountName: string;
   };
 
-  try {
-    const nombaRes = await fetch(
-      `${nombaToken.baseUrl}/v1/accounts/virtual`,
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${nombaToken.accessToken}`,
-          "Content-Type": "application/json",
-          "accountId": business.nomba_sub_account_id, // sub-account creates the virtual account
-        },
-        body: JSON.stringify({
-          accountRef,
-          accountName,
-          currency: "NGN",
-          type: "static",          // permanent — never expires
-        }),
-      }
-    );
+  console.log({
+    parentAccountId: nombaToken.accountId,
+    subAccountId: business.nomba_sub_account_id,
+    endpoint: `${nombaToken.baseUrl}/v1/accounts/virtual/${business.nomba_sub_account_id}`
+});
 
-    const nombaJson = await nombaRes.json();
-    console.log("Nomba virtual account response:", JSON.stringify(nombaJson));
+  try {
+  
+    console.log(JSON.stringify({accountRef, accountName, currency: "NGN" }, null, 2));
+    const payload = {
+    accountRef: accountRef,
+    accountName: "Josh enterprise",
+    currency: "NGN",
+};
+console.log("Creating virtual account:", payload);
+    const nombaRes = await fetch(
+  `${nombaToken.baseUrl}/v1/accounts/virtual/${business.nomba_sub_account_id}`,
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${nombaToken.accessToken}`,
+      "Content-Type": "application/json",
+      accountId: nombaToken.accountId,
+    },
+    body: JSON.stringify(payload),
+  }
+);
+    const responseText = await nombaRes.text();
+
+
+  const nombaJson = JSON.parse(responseText);
+
+  console.log("Nomba virtual account response:", JSON.stringify(nombaJson));
 
     if (nombaJson.code !== "00") {
       console.error("Nomba virtual account creation failed:", nombaJson);
