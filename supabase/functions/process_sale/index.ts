@@ -135,7 +135,6 @@ serve(async (req) => {
     return json({
         ...data,
         branchId:             resolvedBranchId,
-        paymentReference:     paymentReference ?? null,
         paymentStatus,
         virtualAccountNumber: virtualAccount?.nomba_virtual_account_number ?? null,
         virtualAccountBank:   virtualAccount?.nomba_virtual_account_bank ?? null,
