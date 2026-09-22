@@ -18,6 +18,10 @@ export function mapError(message: string): string {
     return "Operation failed — a related record does not exist.";
 
   // Auth errors
+  if (message.includes("invalid_credentials") ||
+      message.includes("Invalid login credentials"))
+    return "Invalid email or password.";
+
   if (message.includes("JWT"))
     return "Your session has expired. Please sign in again.";
 
