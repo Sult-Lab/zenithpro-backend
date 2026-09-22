@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { mapError, getStatus } from "../_shared/errors.ts";
 
 serve(async (req) => {
     if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -61,7 +62,7 @@ serve(async (req) => {
         if (error.message?.includes("unique") || error.code === "23505") {
             return json({ error: "A customer with this phone number already exists" }, 409);
         }
-        return json({ error: error.message }, 500);
+        return json({ error: mapError(error.message) }, getStatus(error.message));
     }
 
     return json(data, 200);

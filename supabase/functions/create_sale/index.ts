@@ -1,6 +1,7 @@
 // Setup type definitions for built-in Supabase Runtime APIs
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { mapError, getStatus } from "../_shared/errors.ts";
 
 Deno.serve(async (req) => {
   const supabase = createClient(
@@ -57,6 +58,10 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ saleId: sale.id }));
 
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message }), { status: 400 });
+    const message = e instanceof Error ? e.message : String(e);
+    console.error("create_sale error:", message);
+    return new Response(JSON.stringify({ error: mapError(message) }), {
+      status: getStatus(message),
+    });
   }
 });

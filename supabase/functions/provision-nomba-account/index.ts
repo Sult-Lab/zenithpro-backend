@@ -153,7 +153,6 @@ console.log("Creating virtual account:", payload);
       return json({
         error: "Failed to create virtual account",
         code: "NOMBA_ERROR",
-        details: nombaJson.description,
       }, 502);
     }
 

@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { mapError, getStatus } from "../_shared/errors.ts";
 
 serve(async (req) => {
   try {
@@ -56,15 +57,16 @@ serve(async (req) => {
 
     if (uploadError) {
       console.error("Upload error:", uploadError.message);
-      return response({ error: uploadError.message }, 500);
+      return response({ error: mapError(uploadError.message) }, getStatus(uploadError.message));
     }
 
     console.log("Upload success:", filePath);
     return response({ imagePath: filePath });
 
   } catch (e) {
-    console.error("Unexpected error:", e.message);
-    return response({ error: e.message }, 500);
+    const message = e instanceof Error ? e.message : String(e);
+    console.error("Unexpected error:", message);
+    return response({ error: mapError(message) }, getStatus(message));
   }
 });
 

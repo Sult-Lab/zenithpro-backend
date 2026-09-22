@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { mapError } from "../_shared/errors.ts";
 
 serve(async (req) => {
     if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -20,7 +21,8 @@ serve(async (req) => {
         await supabaseAnon.auth.signInWithPassword({ email, password });
 
     if (authError || !authData.user || !authData.session) {
-        return json({ error: authError?.message ?? "Invalid credentials" }, 401);
+        const message = authError?.message ?? "Invalid credentials";
+        return json({ error: mapError(message) }, 401);
     }
 
     // Use service role to fetch profile + business without RLS issues

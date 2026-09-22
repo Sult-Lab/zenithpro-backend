@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { mapError } from "../_shared/errors.ts";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -281,9 +282,9 @@ Deno.serve(async (req) => {
       );
     }
 
+    const message = linkError?.message ?? "Failed to create account";
     return error(
-      linkError?.message ??
-        "Failed to create account",
+      mapError(message),
       400,
       "AUTH_ERROR"
     );

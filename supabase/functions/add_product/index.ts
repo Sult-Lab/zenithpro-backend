@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { mapError, getStatus } from "../_shared/errors.ts";
 
 serve(async (req) => {
   try {
@@ -211,10 +212,10 @@ serve(async (req) => {
 
       return json(
         {
-          error: error.message,
+          error: mapError(error.message),
           code: "RPC_ERROR",
         },
-        500
+        getStatus(error.message)
       );
     }
 
@@ -238,15 +239,8 @@ serve(async (req) => {
     // ============================================================
     console.error("Unexpected error:", e);
 
-    return json(
-      {
-        error:
-          e instanceof Error
-            ? e.message
-            : "An unexpected error occurred",
-      },
-      500
-    );
+    const message = e instanceof Error ? e.message : String(e);
+    return json({ error: mapError(message) }, getStatus(message));
   }
 });
 

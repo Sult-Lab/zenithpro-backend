@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { mapError, getStatus } from "../_shared/errors.ts";
 
 const json = (data: unknown, status = 200) =>
     new Response(JSON.stringify(data), {
@@ -35,7 +36,10 @@ serve(async (req) => {
             password: newPassword,
         });
 
-    if (updateError) return json({ error: updateError.message }, 400);
+    if (updateError) {
+        console.error("change_password error:", updateError.message);
+        return json({ error: mapError(updateError.message) }, getStatus(updateError.message));
+    }
 
     await supabaseAdmin
         .from("user_profiles")

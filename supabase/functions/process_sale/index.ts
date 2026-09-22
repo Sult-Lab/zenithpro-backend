@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { mapError, getStatus } from "../_shared/errors.ts";
 
 // process-sale/index.ts
 serve(async (req) => {
@@ -116,10 +117,7 @@ serve(async (req) => {
 
     if (error) {
         console.error("process_sale error:", error);
-        if (error.message?.includes("Insufficient stock")) {
-            return json({ error: error.message }, 422);
-        }
-        return json({ error: error.message }, 500);
+        return json({ error: mapError(error.message) }, getStatus(error.message));
     }
 
     let virtualAccount = null;

@@ -2,6 +2,7 @@
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { mapError, getStatus } from "../_shared/errors.ts";
 
 serve(async (req) => {
   try {
@@ -23,7 +24,11 @@ serve(async (req) => {
       .remove([imagePath]);
 
     if (error) {
-      return new Response(error.message, { status: 500 });
+      console.error("delete_product_image error:", error.message);
+      return new Response(JSON.stringify({ error: mapError(error.message) }), {
+        status: getStatus(error.message),
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     return new Response("Deleted", { status: 200 });

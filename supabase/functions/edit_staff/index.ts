@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { mapError, getStatus } from "../_shared/errors.ts";
 
 serve(async (req) => {
     if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -116,7 +117,7 @@ serve(async (req) => {
 
     if (updateError) {
         console.error("edit staff error:", updateError);
-        return json({ error: updateError.message }, 500);
+        return json({ error: mapError(updateError.message) }, getStatus(updateError.message));
     }
 
     // If email changed, update auth.users email too

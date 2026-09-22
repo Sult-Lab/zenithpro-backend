@@ -1,6 +1,7 @@
 // Setup type definitions for built-in Supabase Runtime APIs
 import { serve } from "https://deno.land/std/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js";
+import { mapError, getStatus } from "../_shared/errors.ts";
 
 serve(async (req) => {
   try {
@@ -86,9 +87,10 @@ serve(async (req) => {
     });
 
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
     return new Response(
-      JSON.stringify({ error: e.message }),
-      { status: 500 }
+      JSON.stringify({ error: mapError(message) }),
+      { status: getStatus(message) }
     );
   }
 });

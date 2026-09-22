@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { mapError, getStatus } from "../_shared/errors.ts";
 
 serve(async (req) => {
     if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -92,7 +93,8 @@ serve(async (req) => {
         if (authError?.message?.includes("already registered")) {
             return json({ error: "A user with this email already exists" }, 409);
         }
-        return json({ error: authError?.message ?? "Failed to create user" }, 400);
+        const message = authError?.message ?? "Failed to create user";
+        return json({ error: mapError(message) }, getStatus(message));
     }
 
     // Create user profile
@@ -115,7 +117,7 @@ serve(async (req) => {
         // Roll back auth user if profile creation fails
         await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
         console.error("Profile insert error:", profileInsertError);
-        return json({ error: profileInsertError.message }, 400);
+        return json({ error: mapError(profileInsertError.message) }, getStatus(profileInsertError.message));
     }
 
     return json({
